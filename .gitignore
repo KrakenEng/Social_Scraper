@@ -1,0 +1,6 @@
+*.csv
+debug_dom.py
+requirements.txt.txt
+__pycache__/
+*.pyc
+.env
