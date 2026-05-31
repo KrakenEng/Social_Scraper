@@ -1,4 +1,5 @@
 import csv
+import subprocess
 import time
 import requests
 from datetime import datetime, timezone, timedelta
@@ -65,10 +66,27 @@ def fetch_statuses(session, account_id, max_id=None, since_id=None):
     return resp.json()
 
 
-def make_post(s):
+def extract_text(s):
+    """Pull text from content, card, or media alt-text — whichever has data."""
     text = strip_html(s.get("content", ""))
+    if not text:
+        card = s.get("card") or {}
+        parts = [card.get("title", ""), card.get("description", "")]
+        text = " — ".join(p.strip() for p in parts if p.strip())
+    if not text:
+        alts = [
+            a.get("description", "")
+            for a in (s.get("media_attachments") or [])
+            if a.get("description")
+        ]
+        text = " | ".join(alts)
+    return text
+
+
+def make_post(s):
+    text = extract_text(s)
     if not text and s.get("reblog"):
-        text = strip_html(s["reblog"].get("content", ""))
+        text = extract_text(s["reblog"])
     return {
         "id": s["id"],
         "created_at": s["created_at"],
@@ -156,7 +174,7 @@ def scrape(username, cutoff_days):
 def save_csv(new_posts, filename):
     if not new_posts:
         print("\nNo new posts to save.")
-        return
+        return 0
 
     existing = []
     try:
@@ -180,8 +198,24 @@ def save_csv(new_posts, filename):
         writer.writerows(merged)
 
     print(f"\nSaved {len(merged)} total posts ({len(new_posts)} new) to {filename}")
+    return len(new_posts)
+
+
+def git_commit(filename, new_count):
+    script_dir = __file__ and __import__("os.path", fromlist=["dirname"]).dirname(
+        __import__("os.path", fromlist=["abspath"]).abspath(__file__)
+    )
+    msg = f"scraper: add {new_count} new post{'s' if new_count != 1 else ''} [{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}]"
+    try:
+        subprocess.run(["git", "add", filename, "scraper.py"], cwd=script_dir, check=True)
+        subprocess.run(["git", "commit", "-m", msg], cwd=script_dir, check=True)
+        print(f"Committed: {msg}")
+    except subprocess.CalledProcessError as e:
+        print(f"Git commit failed: {e}")
 
 
 if __name__ == "__main__":
     posts = scrape(PROFILE, CUTOFF_DAYS)
-    save_csv(posts, OUTPUT_FILE)
+    new_count = save_csv(posts, OUTPUT_FILE)
+    if new_count:
+        git_commit(OUTPUT_FILE, new_count)
